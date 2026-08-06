@@ -72,7 +72,15 @@ async function runStep(page, step, ctx) {
           if (done && (await done.isVisible())) break;
         }
 
-        await page.waitForSelector(step.optionSelector, { state: "visible", timeout });
+        // Wait briefly for the next question's options. If none show up, the quiz is over.
+        try {
+          await page.waitForSelector(step.optionSelector, {
+            state: "visible",
+            timeout: step.questionTimeoutMs ?? 5000,
+          });
+        } catch {
+          break;
+        }
         const options = await page.$$(step.optionSelector);
         const visible = [];
         for (const o of options) if (await o.isVisible()) visible.push(o);
@@ -105,6 +113,15 @@ async function runStep(page, step, ctx) {
 
         await choice.click();
 
+        // VERIFY mode: snapshot the selected state (like the highlighted cards in your screenshots).
+        if (process.env.VERIFY) {
+          try {
+            const dir = path.join(process.cwd(), "verify");
+            fs.mkdirSync(dir, { recursive: true });
+            await page.screenshot({ path: path.join(dir, `${ctx.job}-i${ctx.index}-q${q}.png`) });
+          } catch (_) {}
+        }
+
         if (step.nextSelector) {
           const next = await page.$(step.nextSelector);
           if (next && (await next.isVisible()) && (await next.isEnabled())) await next.click();
@@ -130,7 +147,17 @@ async function runSubmission(browser, job, index, logPath) {
     const startedAt = Date.now();
 
     try {
-      for (const step of job.steps) await runStep(page, step, ctx);
+      for (let s = 0; s < job.steps.length; s++) {
+        const step = job.steps[s];
+        await runStep(page, step, ctx);
+        if (process.env.VERIFY) {
+          try {
+            const dir = path.join(process.cwd(), "verify");
+            fs.mkdirSync(dir, { recursive: true });
+            await page.screenshot({ path: path.join(dir, `${job.name}-i${index}-s${s}-${step.action}.png`) });
+          } catch (_) {}
+        }
+      }
       const entry = { job: job.name, index, attempt, ok: true, ms: Date.now() - startedAt, at: new Date().toISOString() };
       logResult(logPath, entry);
       await context.close();

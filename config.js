@@ -1,72 +1,81 @@
-// config.js — two quiz variants, 300 each = 600/day
-// Edit selectors + answers to match your quizzes. Runner (form-tester.js) stays untouched.
+// config.js — Calmerceuticals Skin Quiz (test store), two answer-paths, 300 each = 600/day
 //
-// ---- Daily scheduling ----
-// Easiest (cross-platform, zero setup): set daily:true below and just leave
-//   `node form-tester.js` running. It runs both jobs now, then again each day at dailyAtHour.
+// Store: https://test-by-farhan.myshopify.com/
 //
-// More robust (survives reboots/crashes) — set daily:false and schedule the OS instead:
-//   macOS/Linux cron (run 9:00 AM daily):
-//     0 9 * * *  cd /path/to/project && /usr/bin/node form-tester.js >> run.log 2>&1
-//   Windows Task Scheduler:
-//     Program: node    Arguments: form-tester.js    Start in: C:\path\to\project    Trigger: Daily 9:00 AM
+// ============================================================================
+// YOU MUST FILL 2 THINGS from the live quiz (I can't reach your store to read
+// the DOM). Open the quiz in Chrome, right-click an answer card -> Inspect:
+//   1) QUIZ_URL          -> the exact page the quiz lives on
+//   2) OPTION_SELECTOR   -> a CSS selector that matches ONE answer card
+//                           (find the common class on each option, e.g. ".quiz-option",
+//                            "button[data-answer]", ".skin-quiz__option" ... whatever it is)
+// Optional:
+//   3) DONE_SELECTOR     -> something that appears on the final result screen
+//      (not required — the loop auto-stops when no more questions appear)
+//
+// The quiz auto-advances on click (no "Next" button in the screenshots), so
+// nextSelector is intentionally omitted.
+// ============================================================================
 
-const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
-const digits = (n) => Array.from({ length: n }, () => Math.floor(Math.random() * 10)).join("");
-const fakeEmail = (ctx) => `qa+${ctx.job}-${ctx.index}-${digits(4)}@example.com`;
+const QUIZ_URL = "https://calmerceuticals.com/pages/questionnaire"; // <-- set the real path
+const OPTION_SELECTOR = ".opt";                                  // <-- set the real selector
+// const DONE_SELECTOR = ".quiz-result";                                 // optional
 
-// ---- shared defaults (each job can override any of these) ----
 module.exports = {
-  concurrency: 4,             // parallel "tabs"
-  headless: true,             // false to watch it run while verifying selectors
+  concurrency: 4,
+  headless: true,             // set false the first time to WATCH it pick answers
   retriesPerSubmission: 1,
   retryDelayMs: 1500,
   stepTimeoutMs: 15000,
-  pacing: "spread",           // "spread" = gentle across the window | "burst" = as fast as possible
+  pacing: "spread",
   spreadWindowMs: 8 * 60 * 60 * 1000,
 
-  // ---- daily loop ----
-  daily: true,                // true = built-in loop reruns every day (keep process running)
-  dailyAtHour: 9,             // 24h clock, local time
+  daily: true,
+  dailyAtHour: 9,
 
-  // ---- the two quiz variants ----
   jobs: [
     {
-      name: "quiz-a",
+      name: "path-a-3544-hair",
       total: 300,
       steps: [
-        { action: "goto", url: "https://your-staging-store.myshopify.com/pages/quiz-a" },
+        { action: "goto", url: QUIZ_URL },
+        // If the quiz is behind a "Start" button or popup, uncomment & set it:
+        // { action: "click", selector: "button.quiz-start" },
         {
           action: "quizLoop",
-          optionSelector: ".quiz-answer",
-          nextSelector: "button.quiz-next",   // omit if selecting auto-advances
-          doneSelector: ".quiz-result",
-          maxQuestions: 15,
-          settleMs: 600,
-          strict: true,                        // error if a chosen answer isn't found
-          answers: [1, "Yes", 0, "Improve sleep", (ctx, q, t) => t.length - 1],
+          optionSelector: OPTION_SELECTOR,
+          // nextSelector omitted -> quiz auto-advances on click
+          // doneSelector: DONE_SELECTOR,
+          maxQuestions: 20,
+          settleMs: 700,             // let the card transition finish
+          questionTimeoutMs: 5000,   // how long to wait before deciding "quiz finished"
+          strict: true,              // throw if a specified answer text isn't found (catches typos)
+          // Q1 = age, Q2 = concern. Matched by visible text (dash-free subtitle for age).
+          answers: ["Decline begins", "Hair and nails"],
+          // ^ questions 3+ are unspecified -> random. Add more entries to pin them.
         },
-        // { action: "fill",  selector: 'input[name="email"]', value: (ctx) => fakeEmail(ctx) },
-        // { action: "click", selector: "button.quiz-submit" },
-        { action: "waitForSelector", selector: ".quiz-result", state: "visible" },
+        // If the quiz ends with an email capture / submit that actually records the entry,
+        // include it here so a "submission" really counts:
+        // { action: "fill",  selector: 'input[type="email"]', value: (ctx) => `qa+${ctx.job}-${ctx.index}@example.com` },
+        // { action: "click", selector: "button[type=submit]" },
+        // { action: "waitForSelector", selector: DONE_SELECTOR, state: "visible" },
       ],
     },
     {
-      name: "quiz-b",
+      name: "path-b-4554-body",
       total: 300,
       steps: [
-        { action: "goto", url: "https://your-staging-store.myshopify.com/pages/quiz-b" },
+        { action: "goto", url: QUIZ_URL },
         {
           action: "quizLoop",
-          optionSelector: ".quiz-answer",
-          nextSelector: "button.quiz-next",
-          doneSelector: ".quiz-result",
-          maxQuestions: 15,
-          settleMs: 600,
+          optionSelector: OPTION_SELECTOR,
+          maxQuestions: 20,
+          settleMs: 700,
+          questionTimeoutMs: 5000,
           strict: true,
-          answers: ["No", 2, "Reduce stress", 0],
+          answers: ["Critical window", "skin looseness"],
         },
-        { action: "waitForSelector", selector: ".quiz-result", state: "visible" },
+        // (same optional email/submit block as above if applicable)
       ],
     },
   ],
