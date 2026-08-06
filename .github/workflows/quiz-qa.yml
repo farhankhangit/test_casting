@@ -1,21 +1,29 @@
 name: quiz-qa
 
-# 09:00 PKT (UTC+5) = 04:00 UTC. Adjust as needed.
+# Runs every 2 hours = 12 runs/day. Each run tops up toward the daily cap (300 real per job).
 on:
   schedule:
-    - cron: "0 4 * * *"
-  workflow_dispatch: {}      # lets you run it manually from the Actions tab
+    - cron: "0 */2 * * *"
+  workflow_dispatch: {}      # manual run from the Actions tab
+
+# Serialize runs so two never race on the committed data/ store.
+concurrency:
+  group: quiz-qa
+  cancel-in-progress: false
+
+permissions:
+  contents: write            # needed to commit the data/ store back
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4      # pulls latest data/ so the cap is accurate
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install deps
         run: |
@@ -25,15 +33,35 @@ jobs:
       - name: Run quiz jobs
         run: node form-tester.js
         env:
-          RUN_ONCE: "1"       # single run; the cron above handles "daily"
-          PACING: burst       # 8h spread doesn't fit a CI runner; burst finishes fast
+          RUN_ONCE: "1"       # single run; cron handles the schedule
+          PACING: burst       # each small batch finishes fast
+          # NOTE: no TEST/VERIFY here -> these are REAL submissions and count toward the cap.
 
-      - name: Upload results & failure screenshots
+      - name: Build report
+        if: always()
+        run: node report.js
+
+      - name: Commit data store
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ || true
+          if git diff --staged --quiet; then
+            echo "No new data to commit."
+          else
+            git commit -m "data: quiz submissions $(date -u +%FT%TZ)"
+            git pull --rebase --autostash || true
+            git push
+          fi
+
+      - name: Upload results, report & failure screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: results-${{ github.run_id }}
           path: |
-            results-*.jsonl
+            data/**
+            report.html
             failures/**
           if-no-files-found: ignore

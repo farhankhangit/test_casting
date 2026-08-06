@@ -17,9 +17,14 @@
 // nextSelector is intentionally omitted.
 // ============================================================================
 
-const QUIZ_URL = "https://calmerceuticals.com/pages/questionnaire"; // <-- set the real path
-const OPTION_SELECTOR = ".opt";                                  // <-- set the real selector
-// const DONE_SELECTOR = ".quiz-result";                                 // optional
+const QUIZ_URL = "https://calmerceuticals.com/pages/questionnaire"; // set the real path if different
+// All 18 screens live in the DOM at once (hidden via CSS), so we scope to the ACTIVE one only.
+const OPTION_SELECTOR = ".screen.active [data-pick]"; // options on the current question
+const NEXT_SELECTOR = ".screen.active .btn-next";     // "Continue" button on the current question
+
+// The "FREE GIFT" marketing popup overlays the quiz — dismiss it whenever it appears.
+const DISMISS_TEXTS = ["like free gifts"];  // the "I don't like free gifts" link (apostrophe-safe substring)
+const DISMISS_SELECTORS = [];               // add the popup's × close button selector here if the link isn't reliable
 
 module.exports = {
   concurrency: 4,
@@ -36,7 +41,8 @@ module.exports = {
   jobs: [
     {
       name: "path-a-3544-hair",
-      total: 5,
+      total: 30,   // per-run batch (buffer); daily cap below stops at 300
+      dailyTarget: 300,   // real submissions/day cap for this job
       steps: [
         { action: "goto", url: QUIZ_URL },
         // If the quiz is behind a "Start" button or popup, uncomment & set it:
@@ -44,9 +50,10 @@ module.exports = {
         {
           action: "quizLoop",
           optionSelector: OPTION_SELECTOR,
-          // nextSelector omitted -> quiz auto-advances on click
-          // doneSelector: DONE_SELECTOR,
-          maxQuestions: 20,
+          nextSelector: NEXT_SELECTOR,   // click "Continue" after each pick
+          dismissTexts: DISMISS_TEXTS,
+          dismissSelectors: DISMISS_SELECTORS,
+          maxQuestions: 2,   // sirf age + concern, phir ruk jao
           settleMs: 700,             // let the card transition finish
           questionTimeoutMs: 5000,   // how long to wait before deciding "quiz finished"
           strict: true,              // throw if a specified answer text isn't found (catches typos)
@@ -63,13 +70,17 @@ module.exports = {
     },
     {
       name: "path-b-4554-body",
-      total: 5,
+      total: 30,   // per-run batch (buffer); daily cap below stops at 300
+      dailyTarget: 300,   // real submissions/day cap for this job
       steps: [
         { action: "goto", url: QUIZ_URL },
         {
           action: "quizLoop",
           optionSelector: OPTION_SELECTOR,
-          maxQuestions: 20,
+          nextSelector: NEXT_SELECTOR,
+          dismissTexts: DISMISS_TEXTS,
+          dismissSelectors: DISMISS_SELECTORS,
+          maxQuestions: 2,   // sirf age + concern, phir ruk jao
           settleMs: 700,
           questionTimeoutMs: 5000,
           strict: true,

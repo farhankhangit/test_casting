@@ -1,0 +1,5 @@
+node_modules/
+verify/
+failures/
+results-*.jsonl
+report.html

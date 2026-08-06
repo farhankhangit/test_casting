@@ -20,6 +20,41 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const resolveValue = (v, ctx) => (typeof v === "function" ? v(ctx) : v);
 const logResult = (p, e) => fs.appendFileSync(p, JSON.stringify(e) + "\n");
 
+// Test vs real. Local testing should set TEST=1 (VERIFY implies test too) so those
+// submissions are excluded from the daily cap and from "real" report totals.
+const IS_TEST = !!(process.env.TEST || process.env.VERIFY);
+
+// Persistent per-day, per-job store (committed by CI so the cap survives across runs).
+const DATA_DIR = path.join(process.cwd(), "data");
+const dataFileFor = (date, jobName) => path.join(DATA_DIR, `${date}-${jobName}.jsonl`);
+
+// Count REAL successful submissions already recorded for this day+job.
+function countRealOk(file) {
+  if (!fs.existsSync(file)) return 0;
+  let n = 0;
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    if (!line) continue;
+    try { const e = JSON.parse(line); if (e.ok && e.test !== true) n++; } catch (_) {}
+  }
+  return n;
+}
+
+// Close any blocking popup/modal (e.g. the "free gift" marketing overlay) if present.
+async function dismissPopups(page, step) {
+  for (const sel of step.dismissSelectors || []) {
+    try {
+      const el = await page.$(sel);
+      if (el && (await el.isVisible())) { await el.click({ timeout: 2000 }); await page.waitForTimeout(250); }
+    } catch (_) {}
+  }
+  for (const txt of step.dismissTexts || []) {
+    try {
+      const el = page.getByText(txt, { exact: false }).first();
+      if (await el.isVisible()) { await el.click({ timeout: 2000 }); await page.waitForTimeout(250); }
+    } catch (_) {}
+  }
+}
+
 // per-job/global setting resolver
 const setting = (job, key, dflt) => (job[key] ?? config[key] ?? dflt);
 
@@ -65,8 +100,11 @@ async function runStep(page, step, ctx) {
       // Repeatedly: pick an answer -> advance -> until the result/done element appears.
       const maxQuestions = step.maxQuestions ?? 20;
       const settleMs = step.settleMs ?? 600;
+      let answered = 0;
 
       for (let q = 0; q < maxQuestions; q++) {
+        await dismissPopups(page, step); // clear any marketing overlay first
+
         if (step.doneSelector) {
           const done = await page.$(step.doneSelector);
           if (done && (await done.isVisible())) break;
@@ -112,6 +150,15 @@ async function runStep(page, step, ctx) {
         }
 
         await choice.click();
+        answered++;
+
+        // Record which option was clicked (for the report).
+        let label = "";
+        try { label = ((await choice.$eval("b", (e) => e.textContent)) || "").trim(); } catch (_) {}
+        if (!label) {
+          try { label = ((await choice.textContent()) || "").replace(/\s+/g, " ").trim().slice(0, 60); } catch (_) {}
+        }
+        if (ctx.picks) ctx.picks.push({ q, label });
 
         // VERIFY mode: snapshot the selected state (like the highlighted cards in your screenshots).
         if (process.env.VERIFY) {
@@ -122,11 +169,30 @@ async function runStep(page, step, ctx) {
           } catch (_) {}
         }
 
+        // Advance: the quiz has a Continue button per screen (all in the DOM), and it
+        // enables only after a pick. Find the visible+enabled one and click it.
         if (step.nextSelector) {
-          const next = await page.$(step.nextSelector);
-          if (next && (await next.isVisible()) && (await next.isEnabled())) await next.click();
+          await dismissPopups(page, step); // popup may have appeared after the pick
+          const deadline = Date.now() + (step.advanceTimeoutMs ?? 3000);
+          let clicked = false;
+          while (Date.now() < deadline && !clicked) {
+            for (const nb of await page.$$(step.nextSelector)) {
+              if ((await nb.isVisible()) && (await nb.isEnabled())) {
+                await nb.click();
+                clicked = true;
+                break;
+              }
+            }
+            if (!clicked) await page.waitForTimeout(150);
+          }
         }
         await page.waitForTimeout(settleMs);
+      }
+      if (answered < (step.minQuestions ?? 1)) {
+        throw new Error(
+          `quizLoop answered ${answered} question(s) (expected >= ${step.minQuestions ?? 1}). ` +
+          `optionSelector "${step.optionSelector}" likely matched nothing, or the quiz URL is wrong.`
+        );
       }
       break;
     }
@@ -143,7 +209,7 @@ async function runSubmission(browser, job, index, logPath) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const context = await browser.newContext();
     const page = await context.newPage();
-    const ctx = { job: job.name, index, attempt, now: new Date() };
+    const ctx = { job: job.name, index, attempt, now: new Date(), picks: [] };
     const startedAt = Date.now();
 
     try {
@@ -158,7 +224,7 @@ async function runSubmission(browser, job, index, logPath) {
           } catch (_) {}
         }
       }
-      const entry = { job: job.name, index, attempt, ok: true, ms: Date.now() - startedAt, at: new Date().toISOString() };
+      const entry = { job: job.name, index, attempt, ok: true, test: IS_TEST, ms: Date.now() - startedAt, picks: ctx.picks, at: new Date().toISOString() };
       logResult(logPath, entry);
       await context.close();
       return entry;
@@ -174,23 +240,40 @@ async function runSubmission(browser, job, index, logPath) {
     }
   }
 
-  const entry = { job: job.name, index, ok: false, error: String(lastErr?.message ?? lastErr), at: new Date().toISOString() };
+  const entry = { job: job.name, index, ok: false, test: IS_TEST, error: String(lastErr?.message ?? lastErr), at: new Date().toISOString() };
   logResult(logPath, entry);
   return entry;
 }
 
 // Run a single job to completion (its own concurrency pool + pacing).
 async function runJob(browser, job, dateStamp) {
-  const total = job.total ?? 300;
+  const batch = job.total ?? 300;                 // max submissions this run
+  const dailyTarget = setting(job, "dailyTarget", 300);
   const concurrency = setting(job, "concurrency", 3);
   const pacing = process.env.PACING ?? setting(job, "pacing", "burst");
+
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const logPath = dataFileFor(dateStamp, job.name);
+
+  // Daily cap (real runs only): never let REAL successes exceed dailyTarget.
+  let total = batch;
+  if (!IS_TEST) {
+    const alreadyReal = countRealOk(logPath);
+    const remaining = dailyTarget - alreadyReal;
+    if (remaining <= 0) {
+      console.log(`\n== Job "${job.name}" | SKIPPED — daily cap reached (${alreadyReal}/${dailyTarget} real today)`);
+      return { job: job.name, ok: 0, fail: 0, total: 0, skipped: true, alreadyReal };
+    }
+    total = Math.min(batch, remaining);
+    console.log(`\n== Job "${job.name}" | ${total} this run (${alreadyReal}/${dailyTarget} real done today) | conc ${concurrency} | ${pacing}${IS_TEST ? " | TEST" : ""}`);
+  } else {
+    console.log(`\n== Job "${job.name}" | ${total} submissions | conc ${concurrency} | ${pacing} | TEST (not counted)`);
+  }
+  console.log(`   log: ${logPath}`);
+
   const gapMs = pacing === "spread"
     ? Math.max(0, Math.floor(setting(job, "spreadWindowMs", 8 * 3600 * 1000) / total))
     : 0;
-
-  const logPath = path.join(process.cwd(), `results-${dateStamp}-${job.name}.jsonl`);
-  console.log(`\n== Job "${job.name}" | ${total} submissions | concurrency ${concurrency} | pacing ${pacing}`);
-  console.log(`   log: ${logPath}`);
 
   let dispatched = 0, ok = 0, fail = 0;
 
@@ -213,7 +296,11 @@ async function runJob(browser, job, dateStamp) {
 // Run every job once.
 async function runAllJobs() {
   const dateStamp = new Date().toISOString().slice(0, 10);
-  const browser = await chromium.launch({ headless: config.headless ?? true });
+  const browser = await chromium.launch({
+    // HEADED=1 forces a visible window (overrides config.headless) for live watching.
+    headless: process.env.HEADED ? false : (config.headless ?? true),
+    slowMo: Number(process.env.SLOWMO ?? config.slowMo ?? 0), // ms delay between actions (live watching)
+  });
   const summaries = [];
   try {
     for (const job of config.jobs) summaries.push(await runJob(browser, job, dateStamp));
