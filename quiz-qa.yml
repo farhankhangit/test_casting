@@ -1,0 +1,39 @@
+name: quiz-qa
+
+# 09:00 PKT (UTC+5) = 04:00 UTC. Adjust as needed.
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}      # lets you run it manually from the Actions tab
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: |
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Run quiz jobs
+        run: node form-tester.js
+        env:
+          RUN_ONCE: "1"       # single run; the cron above handles "daily"
+          PACING: burst       # 8h spread doesn't fit a CI runner; burst finishes fast
+
+      - name: Upload results & failure screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ github.run_id }}
+          path: |
+            results-*.jsonl
+            failures/**
+          if-no-files-found: ignore
