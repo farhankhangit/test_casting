@@ -36,7 +36,7 @@ module.exports = {
   jobs: [
     {
       name: "path-a-3544-hair",
-      total: 300,
+      total: 5,
       steps: [
         { action: "goto", url: QUIZ_URL },
         // If the quiz is behind a "Start" button or popup, uncomment & set it:
@@ -63,7 +63,7 @@ module.exports = {
     },
     {
       name: "path-b-4554-body",
-      total: 300,
+      total: 5,
       steps: [
         { action: "goto", url: QUIZ_URL },
         {
